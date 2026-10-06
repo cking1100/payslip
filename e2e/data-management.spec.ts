@@ -1,0 +1,71 @@
+import { test, expect } from "@playwright/test";
+import { seed, reset, assertLocalRequests } from "./helpers";
+
+test("two-step exact DELETE, Enter safety, server rejection, cross-tab reset and reimport", async ({ page, context, request }) => {
+  await seed(request); assertLocalRequests(page);
+  const dashboard = await context.newPage(); assertLocalRequests(dashboard);
+  await dashboard.goto("/");
+  await expect(dashboard.getByRole("heading", { name: "Recent payslips" })).toBeVisible();
+  const statistics = await context.newPage(); await statistics.goto("/statistics");
+  await expect(statistics.getByText("3 of 3 payslips included", { exact: false })).toBeVisible();
+  const delayed = await context.newPage();
+  let held = false;
+  let release: () => void = () => undefined;
+  await delayed.route("**/api/payslips", async (route) => {
+    if (held) { await route.continue(); return; }
+    held = true;
+    const response = await route.fetch();
+    await new Promise<void>((resolve) => { release = resolve; });
+    await route.fulfill({ response });
+  });
+  await delayed.goto("/statistics");
+  await expect.poll(() => held).toBe(true);
+  await page.goto("/history");
+  await expect(page.getByRole("heading", { name: "Payslip history" })).toBeVisible();
+  await expect(page.locator("tbody tr")).toHaveCount(3);
+  await page.locator('tbody a[href^="/payslips/"]').first().click();
+  await expect(page.getByRole("heading", { name: "Earnings and deductions", exact: true })).toBeVisible();
+  const id = new URL(page.url()).pathname.split("/").at(-1)!;
+  await page.getByLabel("Edit gross pay", { exact: true }).fill("1234");
+  await page.getByRole("button", { name: "Save changes locally" }).click();
+  await expect(page.getByText("Changes saved locally.", { exact: true })).toBeVisible();
+  expect((await (await request.get(`/api/payslips/${id}`)).json()).grossPay).toBe(1234);
+  await page.setViewportSize({ width: 390, height: 844 });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.setViewportSize({ width: 1280, height: 720 });
+  await page.goto("/settings");
+  await page.getByRole("button", { name: "Clear all data", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Remove all locally stored payslip data?" })).toBeVisible();
+  await page.getByRole("button", { name: "Continue to final confirmation" }).click();
+  const final = page.getByRole("button", { name: "Delete everything", exact: true });
+  await expect(final).toBeDisabled();
+  await page.getByLabel("Confirmation", { exact: true }).fill("delete");
+  await expect(final).toBeDisabled();
+  const wrong = await request.delete("/api/data", { data: { confirmation: "delete", acknowledged: true } });
+  expect(wrong.status()).toBe(400);
+  expect((await request.delete("/api/payslips")).status()).toBe(400);
+  const external = await request.delete("/api/data", { headers: { origin: "https://example.test" }, data: { confirmation: "DELETE", acknowledged: true } });
+  expect(external.status()).toBe(403);
+  await page.getByLabel("Confirmation", { exact: true }).fill("DELETE");
+  await page.getByLabel("Confirmation", { exact: true }).press("Enter");
+  expect((await (await request.get("/api/payslips")).json()).length).toBe(3);
+  await final.click();
+  await expect(page.getByText("All payslip data has been removed", { exact: false })).toBeVisible();
+  await expect.poll(async () => await (await request.get("/api/data")).json()).toMatchObject({
+    payslips: 0, emails: 0, imports: 0, originals: 0, attachments: 0, temporaryBytes: 0,
+  });
+  await expect(dashboard.getByText("No payslips yet", { exact: true })).toBeVisible();
+  await expect(dashboard.getByRole("button", { name: /^Gmail import/ })).toHaveAttribute("aria-expanded", "true");
+  await expect(statistics.getByRole("heading", { name: "Import payslips to start analysing your pay." })).toBeVisible();
+  await expect(delayed.getByRole("heading", { name: "Import payslips to start analysing your pay." })).toBeVisible();
+  const oldResponse = delayed.waitForResponse("**/api/payslips");
+  release();
+  await (await oldResponse).finished();
+  await delayed.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  await expect(delayed.getByRole("heading", { name: "Import payslips to start analysing your pay." })).toBeVisible();
+  await page.getByRole("link", { name: "Import a Gmail MBOX archive" }).click();
+  await expect(page.getByRole("button", { name: /^Gmail import/ })).toHaveAttribute("aria-expanded", "true");
+  await seed(request);
+  expect((await (await request.get("/api/payslips")).json()).length).toBe(3);
+  await reset(request);
+});

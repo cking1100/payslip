@@ -1,0 +1,132 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model Payslip {
+  id                   String        @id @default(cuid())
+  filename             String
+  storedFilename       String?
+  contentHash          String?       @unique
+  attachmentId         String?       @unique
+  attachment           Attachment?   @relation(fields: [attachmentId], references: [id], onDelete: SetNull)
+  employer             String?
+  employeeName         String?
+  payDate              DateTime?
+  periodStart          DateTime?
+  periodEnd            DateTime?
+  grossPay             Float?
+  netPay               Float?
+  tax                  Float?
+  nationalInsurance    Float?
+  pension              Float?
+  studentLoan          Float?
+  otherDeductions      Float?
+  hoursWorked          Float?
+  hourlyRate           Float?
+  grossYtd             Float?
+  taxYtd               Float?
+  nationalInsuranceYtd Float?
+  pensionYtd           Float?
+  netYtd               Float?
+  extractionVersion    Int           @default(1)
+  importedAt           DateTime      @default(now())
+  updatedAt            DateTime      @updatedAt
+  lines                PayslipLine[]
+  fields               PayslipField[]
+  extractionRevisions  PayslipExtractionRevision[]
+}
+
+model PayslipExtractionRevision {
+  id            String   @id @default(cuid())
+  payslipId     String
+  version       Int
+  parserVersion String
+  payload       String
+  createdAt     DateTime @default(now())
+  payslip       Payslip  @relation(fields: [payslipId], references: [id], onDelete: Cascade)
+
+  @@unique([payslipId, version])
+}
+
+model PayslipLine {
+  id                String   @id @default(cuid())
+  payslipId         String
+  category          String
+  label             String
+  amount            Float?
+  ytdAmount         Float?
+  sourceText        String?
+  confidence        String
+  manuallyCorrected Boolean  @default(false)
+  originalAmount    Float?
+  page              Int?
+  payslip           Payslip  @relation(fields: [payslipId], references: [id], onDelete: Cascade)
+}
+
+model PayslipField {
+  id                String   @id @default(cuid())
+  payslipId         String
+  key               String
+  value             String?
+  originalValue     String?
+  label             String?
+  confidence        String
+  sourceText        String?
+  page              Int?
+  manuallyCorrected Boolean  @default(false)
+  payslip           Payslip  @relation(fields: [payslipId], references: [id], onDelete: Cascade)
+
+  @@unique([payslipId, key])
+}
+
+model MboxImport {
+  id                   String   @id
+  filename             String
+  importedAt           DateTime @default(now())
+  status               String   @default("uploading")
+  expectedBytes        Float
+  uploadedBytes        Float    @default(0)
+  emailsScanned        Int      @default(0)
+  payslipEmailsFound   Int      @default(0)
+  attachmentsFound     Int      @default(0)
+  duplicatesSkipped   Int      @default(0)
+  emailsSkipped        Int      @default(0)
+  malformedEmails     Int      @default(0)
+  error                String?
+  emails               Email[]
+}
+
+model Email {
+  id           String     @id @default(cuid())
+  mboxImportId String
+  sender       String?
+  recipient    String?
+  subject      String?
+  emailDate    DateTime?
+  mboxImport   MboxImport @relation(fields: [mboxImportId], references: [id], onDelete: Cascade)
+  attachments  Attachment[]
+}
+
+model Attachment {
+  id             String   @id
+  emailId        String
+  filename       String
+  mimeType       String
+  size           Int
+  sha256         String   @unique
+  storedFilename String
+  status         String   @default("pending")
+  error          String?
+  email          Email    @relation(fields: [emailId], references: [id], onDelete: Cascade)
+  payslip        Payslip?
+}
+
+model LocalDataState {
+  id         String @id
+  clearToken String
+}
